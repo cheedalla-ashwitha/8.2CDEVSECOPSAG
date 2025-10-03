@@ -30,16 +30,32 @@ pipeline {
     stage('Install Dependencies') {
       steps {
         sh '''
-          npm config set fund false
-          npm config set audit false
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund || npm install --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
-        '''
-      }
-    }
+      set -euxo pipefail
+      echo "Node: $(node -v)  npm: $(npm -v)"
+
+      # Make CI installs tolerant and faster
+      npm config set audit false
+      npm config set fund false
+      npm config set legacy-peer-deps true
+      npm config set fetch-retry-maxtimeout 600000
+
+      # Clean cache (non-fatal)
+      npm cache clean --force || true
+
+      # Try ci first (if lockfile exists); fall back to install with legacy peers
+      if [ -f package-lock.json ]; then
+        npm ci --no-audit --no-fund || \
+        npm ci --no-audit --no-fund --legacy-peer-deps || \
+        npm install --no-audit --no-fund --legacy-peer-deps || \
+        npm install --no-audit --no-fund --force
+      else
+        npm install --no-audit --no-fund --legacy-peer-deps || \
+        npm install --no-audit --no-fund --force
+      fi
+    '''
+  }
+}
+
 
     stage('Run Security Tests (snyk)') {
       steps { sh 'npm test || true' }   // keeps pipeline going even if snyk needs auth
