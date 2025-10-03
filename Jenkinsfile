@@ -1,26 +1,39 @@
 pipeline {
   agent any
-
-  tools {
-    nodejs 'Node18'                    // puts node & npm on PATH (no root needed)
-  }
+  options { timestamps() }
 
   environment {
-    SCANNER_HOME = tool 'ScannerCLI'   // SonarScanner tool name from Tools
+    // Jenkins → Manage Jenkins → Tools → SonarQube Scanner → Name must match
+    SCANNER_HOME = tool 'ScannerCLI'
   }
 
   stages {
-    stage('Checkout') { steps { checkout scm } }
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Provision Runtime (one-time)') {
+      steps {
+        sh '''
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "[bootstrap] Installing Node.js 18..."
+            apt-get update
+            apt-get install -y curl
+            curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+            apt-get install -y nodejs
+          fi
+          echo "[runtime] node: $(node -v)  npm: $(npm -v)"
+        '''
+      }
+    }
 
     stage('Install Dependencies') {
       steps {
         sh '''
-          set -euxo pipefail
-          node -v
-          npm -v
-          # Faster & consistent if lockfile exists, fallback otherwise
+          npm config set fund false
+          npm config set audit false
           if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
+            npm ci --no-audit --no-fund || npm install --no-audit --no-fund
           else
             npm install --no-audit --no-fund
           fi
@@ -28,10 +41,21 @@ pipeline {
       }
     }
 
-    stage('Run Security Tests (snyk)')   { steps { sh 'npm test || true' } }
-    stage('Run Unit Tests')              { steps { sh 'npm run test:unit || true' } }
-    stage('Generate Coverage')           { steps { sh 'npm run coverage || true' } }
-    stage('NPM Audit (Security Scan)')   { steps { sh 'npm audit || true' } }
+    stage('Run Security Tests (snyk)') {
+      steps { sh 'npm test || true' }   // keeps pipeline going even if snyk needs auth
+    }
+
+    stage('Run Unit Tests') {
+      steps { sh 'npm run test:unit || true' }
+    }
+
+    stage('Generate Coverage') {
+      steps { sh 'npm run coverage || true' }   // writes coverage/lcov.info
+    }
+
+    stage('NPM Audit (Security Scan)') {
+      steps { sh 'npm audit || true' }
+    }
 
     stage('SonarCloud Analysis') {
       steps {
@@ -42,6 +66,12 @@ pipeline {
           '''
         }
       }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'coverage/**, npm-debug.log*', allowEmptyArchive: true
     }
   }
 }
